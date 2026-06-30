@@ -99,6 +99,10 @@
     display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--muted);cursor:pointer;}
   .atm-add:active{border-color:var(--orange);}
   .atm-add .ic{font-size:24px;} .atm-add .tx{font-size:11px;font-weight:500;}
+  .atm-thumb.sent img{opacity:0.5;}
+  .sent-tick{position:absolute;top:5px;right:5px;width:24px;height:24px;border-radius:50%;background:#36b367;color:#fff;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;z-index:3;}
+  .pbar{width:100%;height:8px;border-radius:20px;background:rgba(255,255,255,0.1);overflow:hidden;margin:10px 0 8px;}
+  .pbar-fill{height:100%;background:linear-gradient(90deg,var(--orange),var(--red));border-radius:20px;transition:width .2s;}
 
   /* submit bar */
   .bar{position:fixed;bottom:0;left:0;right:0;background:rgba(10,10,11,0.92);backdrop-filter:blur(10px);
@@ -183,7 +187,7 @@ const CONFIG = {
   // หลัง deploy หลังบ้านแล้ว วาง URL ตรงนี้ แล้วแถบ "โหมดทดลอง" จะหายไป
   ENDPOINT_URL: "https://script.google.com/macros/s/AKfycbwKNzUcihbRX_iu9cJL0EftdVc3R3OQC96l8O8ROwXLt3LQ1N3y2rcYERrTh3dfPpRZbQ/exec",
   VENUES: ["โลตัส พระราม 1","โลตัส รังสิต","Robinson Lifestyle","Big C ชลบุรี","อื่นๆ (ระบุเอง)"],
-  MAX_ATMOSPHERE: 20   // จำนวนรูปบรรยากาศสูงสุดต่อครั้ง (ปรับได้ แนะนำไม่เกิน ~30)
+  MAX_ATMOSPHERE: 100  // จำนวนรูปบรรยากาศสูงสุดต่อครั้ง
 };
 
 /* โลโก้ NB Hobby สำหรับติดลายน้ำบนรูป */
@@ -205,6 +209,7 @@ const SLOTS = [
 const state = {}; ROUNDS.forEach(r=>state[r.id]={name:r.name,custom:'',award:null,result:null});
 state.atmosphere = [];                 // เก็บรูปบรรยากาศหลายรูป
 const MAX_ATM = CONFIG.MAX_ATMOSPHERE; // จำนวนสูงสุด
+const UPLOAD_CONCURRENCY = 5;          // อัปพร้อมกันกี่รูป (ยิ่งมากยิ่งเร็ว แต่เปลืองเน็ต)
 
 /* ===================== สร้างหน้าจอ ===================== */
 const venueSel=document.getElementById('venue');
@@ -309,6 +314,31 @@ function makeDataURL(src, sw, sh){
   return c.toDataURL('image/jpeg',0.85);
 }
 
+/* สร้างทั้ง Blob (เต็มไว้ส่ง) + thumbnail เล็ก (ไว้แสดงในกริด ประหยัดแรม) */
+function makeBlobAndThumb(src, sw, sh){
+  return new Promise(resolve=>{
+    const max=1600; let w=sw, h=sh;
+    if(w>=h && w>max){ h=Math.round(h*max/w); w=max; }
+    else if(h>w && h>max){ w=Math.round(w*max/h); h=max; }
+    const c=document.createElement('canvas'); c.width=w; c.height=h;
+    const ctx=c.getContext('2d');
+    ctx.drawImage(src,0,0,w,h);
+    drawWatermark(ctx,w,h);
+    // thumbnail เล็ก ~220px จากภาพที่ติดลายน้ำแล้ว
+    const tmax=220; let tw=w, th=h;
+    if(tw>=th && tw>tmax){ th=Math.round(th*tmax/tw); tw=tmax; }
+    else if(th>tw && th>tmax){ tw=Math.round(tw*tmax/th); th=tmax; }
+    const tc=document.createElement('canvas'); tc.width=tw; tc.height=th;
+    tc.getContext('2d').drawImage(c,0,0,tw,th);
+    const thumb=tc.toDataURL('image/jpeg',0.7);
+    c.toBlob(blob=>resolve({blob,thumb}), 'image/jpeg', 0.85);
+  });
+}
+
+function blobToDataURL(blob){
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(blob); });
+}
+
 function renderPhoto(src, sw, sh, rid, slot){
   state[rid][slot]=makeDataURL(src,sw,sh);
   const tile=document.getElementById(`tile-${rid}-${slot}`);
@@ -321,27 +351,31 @@ function renderPhoto(src, sw, sh, rid, slot){
   updateCounts();
 }
 
-/* ===== รูปบรรยากาศ: เลือกได้หลายรูปพร้อมกัน ===== */
+/* ===== รูปบรรยากาศ: เลือกได้หลายรูปพร้อมกัน (เก็บเป็น Blob ประหยัดแรม) ===== */
 async function pickAtmosphere(input){
   const files=Array.from(input.files||[]);
+  const cntEl=document.getElementById('cnt-atm');
+  let i=0;
   for(const file of files){
     if(state.atmosphere.length>=MAX_ATM){ alert('เพิ่มรูปบรรยากาศได้สูงสุด '+MAX_ATM+' รูป'); break; }
-    let dataURL;
+    if(cntEl) cntEl.textContent='กำลังเตรียม '+(++i)+'/'+files.length;
+    let res;
     try{
       const bmp=await createImageBitmap(file,{imageOrientation:'from-image'});
-      dataURL=makeDataURL(bmp,bmp.width,bmp.height); bmp.close&&bmp.close();
+      res=await makeBlobAndThumb(bmp,bmp.width,bmp.height); bmp.close&&bmp.close();
     }catch(e){
-      dataURL=await new Promise(res=>{const r=new FileReader();r.onload=ev=>{const im=new Image();im.onload=()=>res(makeDataURL(im,im.naturalWidth,im.naturalHeight));im.src=ev.target.result;};r.readAsDataURL(file);});
+      res=await new Promise(resolve=>{const r=new FileReader();r.onload=ev=>{const im=new Image();im.onload=async()=>resolve(await makeBlobAndThumb(im,im.naturalWidth,im.naturalHeight));im.src=ev.target.result;};r.readAsDataURL(file);});
     }
-    state.atmosphere.push(dataURL);
+    state.atmosphere.push({blob:res.blob, thumb:res.thumb, sent:false});
     renderAtmGrid();
+    await new Promise(r=>setTimeout(r,0)); // คืนการควบคุมให้ UI ไม่ค้าง
   }
   input.value='';
   updateCounts();
 }
 function renderAtmGrid(){
   const grid=document.getElementById('atmGrid'); if(!grid)return;
-  const thumbs=state.atmosphere.map((d,i)=>`<div class="atm-thumb"><img src="${d}"><button class="rm" type="button" onclick="removeAtm(${i})">✕</button></div>`).join('');
+  const thumbs=state.atmosphere.map((o,i)=>`<div class="atm-thumb${o.sent?' sent':''}"><img src="${o.thumb}">${o.sent?'<div class="sent-tick">✓</div>':`<button class="rm" type="button" onclick="removeAtm(${i})">✕</button>`}</div>`).join('');
   const addBtn=state.atmosphere.length<MAX_ATM
     ? `<div class="atm-add" onclick="triggerPick('atm','multi')"><span class="ic">＋</span><span class="tx">เพิ่มรูป</span></div>` : '';
   grid.innerHTML=thumbs+addBtn;
@@ -369,7 +403,7 @@ function updateCounts(){
     const c=document.getElementById('cnt-'+r.id);
     c.textContent=n+'/2'; c.classList.toggle('done',n===2);
   });
-  total+=state.atmosphere.length;
+  total+=state.atmosphere.filter(o=>!o.sent).length;   // นับเฉพาะที่ยังไม่ได้ส่ง
   document.getElementById('photoCount').textContent=total;
   document.getElementById('submitBtn').disabled=(total===0);
 }
@@ -395,8 +429,8 @@ function collectItems(){
       if(state[r.id][s.id]) items.push({round:roundName, slot:s.label, image:state[r.id][s.id]});
     });
   });
-  state.atmosphere.forEach((img,i)=>{
-    items.push({round:'บรรยากาศในงาน', slot:'รูปบรรยากาศ '+(i+1), image:img, multi:true});
+  state.atmosphere.forEach((o,i)=>{
+    if(!o.sent) items.push({round:'บรรยากาศในงาน', slot:'รูปบรรยากาศ '+(i+1), blob:o.blob, src:o, multi:true});
   });
   return items;
 }
@@ -428,24 +462,50 @@ async function submitAll(){
     return;
   }
 
-  /* โหมดจริง: อัปโหลดทีละรูป (no-cors = วิธีมาตรฐานของ Apps Script) */
-  let done=0, failed=0;
-  for(const it of items){
-    card.innerHTML=`<div class="spin"></div><h3>กำลังอัปโหลด ${done+1}/${items.length}</h3><p>${it.round} · ${it.slot}</p>`;
-    try{
-      await fetch(CONFIG.ENDPOINT_URL,{
-        method:'POST',
-        mode:'no-cors',                 // Apps Script ไม่ส่ง CORS header เลยต้องใช้ no-cors
-        headers:{'Content-Type':'text/plain;charset=utf-8'},
-        body:JSON.stringify({...meta, round:it.round, slot:it.slot, image:it.image, multi:it.multi===true})
-      });
-      done++;                           // no-cors อ่าน response ไม่ได้ ถือว่าส่งสำเร็จถ้าไม่ throw
-    }catch(err){ failed++; }
+  /* โหมดจริง: อัปขนานทีละชุด (เร็ว + ประหยัดแรม + อัปต่อได้ถ้าหลุด) */
+  const total=items.length;
+  let done=0, failed=0, idx=0;
+
+  function drawProgress(){
+    const pct=Math.round((done+failed)/total*100);
+    card.innerHTML=`
+      <div class="spin"></div>
+      <h3>กำลังอัปโหลด ${done+failed}/${total}</h3>
+      <div class="pbar"><div class="pbar-fill" style="width:${pct}%"></div></div>
+      <p style="font-size:12px;color:var(--muted)">สำเร็จ ${done}${failed?` · พลาด ${failed}`:''} — อย่าปิดหน้านี้</p>`;
   }
+  drawProgress();
+
+  async function uploadOne(it){
+    const image = it.image || await blobToDataURL(it.blob);
+    await fetch(CONFIG.ENDPOINT_URL,{
+      method:'POST',
+      mode:'no-cors',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify({...meta, round:it.round, slot:it.slot, image, multi:it.multi===true})
+    });
+  }
+
+  async function worker(){
+    while(idx < items.length){
+      const it = items[idx++];
+      try{
+        await uploadOne(it);
+        if(it.src){ it.src.sent=true; it.src.blob=null; }  // มาร์คว่าส่งแล้ว + คืนแรม
+        done++;
+      }catch(err){ failed++; }
+      drawProgress();
+    }
+  }
+  // ปล่อย worker ขนานกันตามจำนวน UPLOAD_CONCURRENCY
+  await Promise.all(Array.from({length:Math.min(UPLOAD_CONCURRENCY,total)}, worker));
+
+  renderAtmGrid(); updateCounts();   // อัปเดตกริด (รูปที่ส่งแล้วจะติด ✓ ไม่ส่งซ้ำ)
+
   card.innerHTML=`
     <div class="big">${failed?'⚠️':'🎉'}</div>
     <h3>${failed?'ส่งเสร็จบางส่วน':'ส่งรูปเรียบร้อย'}</h3>
-    <p>ส่งแล้ว <span style="color:#5fd38b;font-weight:700">${done}</span> รูป${failed?` · ส่งไม่ได้ <span style="color:#ff6b6b;font-weight:700">${failed}</span> รูป`:''}</p>
+    <p>ส่งแล้ว <span style="color:#5fd38b;font-weight:700">${done}</span> รูป${failed?` · ส่งไม่ได้ <span style="color:#ff6b6b;font-weight:700">${failed}</span> รูป<br><span style="font-size:12px;color:var(--muted)">กด \"อัปโหลดทั้งหมด\" อีกครั้ง เพื่อส่งเฉพาะรูปที่ยังไม่สำเร็จ</span>`:''}</p>
     <p style="margin-top:10px;font-size:12px;color:var(--muted)">ตรวจสอบได้ที่โฟลเดอร์ Google Drive</p>
     <button class="btn ov-btn" onclick="document.getElementById('overlay').classList.remove('show')">เสร็จสิ้น</button>`;
 }
