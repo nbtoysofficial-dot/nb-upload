@@ -65,6 +65,12 @@
   .round-head .ti small{font-size:11px;color:var(--muted);}
   .count{font-size:11px;font-weight:700;color:var(--muted);background:var(--panel2);padding:4px 9px;border-radius:20px;}
   .count.done{background:rgba(54,179,103,0.18);color:#5fd38b;}
+  .add-round-btn{display:block;width:calc(100% - 28px);margin:0 14px 14px;font-family:'Kanit',sans-serif;
+    font-weight:700;font-size:15px;color:var(--orange);background:rgba(255,107,26,0.09);
+    border:1.5px dashed rgba(255,107,26,0.5);border-radius:14px;padding:14px;cursor:pointer;}
+  .add-round-btn:active{background:rgba(255,107,26,0.16);}
+  .round-rm{flex:none;width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,0.06);
+    border:1px solid var(--line);font-size:14px;cursor:pointer;margin-left:6px;}
 
   .round-body{padding:14px 16px;}
   .custom-name{margin-bottom:14px;}
@@ -222,13 +228,18 @@ venueSel.addEventListener('change',()=>{
 });
 
 const roundsEl=document.getElementById('rounds');
-ROUNDS.forEach((r,i)=>{
-  const card=document.createElement('div');card.className='round';card.id='round-'+r.id;
+const dynamicRounds=[]; let extraCount=0;
+function allRounds(){ return ROUNDS.concat(dynamicRounds); }
+
+function buildRoundCard(r){
+  const card=document.createElement('div');
+  card.className='round'; card.id='round-'+r.id;
   card.innerHTML=`
     <div class="round-head">
-      <div class="rnum">${i+1}</div>
+      <div class="rnum"></div>
       <div class="ti"><b>${r.name}</b>${r.sub?`<small>${r.sub}</small>`:''}</div>
       <div class="count" id="cnt-${r.id}">0/2</div>
+      ${r.removable?`<button class="round-rm" type="button" onclick="removeRound('${r.id}')">🗑️</button>`:''}
     </div>
     <div class="round-body">
       ${r.custom?`<div class="custom-name"><span class="lbl">ชื่อรอบ</span><input type="text" placeholder="เช่น รุ่นพิเศษ / Teen" oninput="state['${r.id}'].custom=this.value"></div>`:''}
@@ -244,8 +255,17 @@ ROUNDS.forEach((r,i)=>{
           </div>`).join('')}
       </div>
     </div>`;
-  roundsEl.appendChild(card);
-});
+  return card;
+}
+function renumberRounds(){
+  let n=0;
+  roundsEl.querySelectorAll('.round').forEach(card=>{
+    if(card.id==='atm-card') return;
+    const rn=card.querySelector('.rnum');
+    if(rn){ n++; rn.textContent=n; }
+  });
+}
+ROUNDS.forEach(r=> roundsEl.appendChild(buildRoundCard(r)) );
 
 /* ===== การ์ดรูปบรรยากาศในงาน (อัปได้หลายรูป) ===== */
 const atmCard=document.createElement('div');
@@ -261,7 +281,33 @@ atmCard.innerHTML=`
     <input type="file" id="file-atm-multi" accept="image/*" multiple onchange="pickAtmosphere(this)">
   </div>`;
 roundsEl.appendChild(atmCard);
+atmCard.id='atm-card';
 renderAtmGrid();
+
+/* ===== ปุ่มเพิ่มรอบ (แทรกก่อนรูปบรรยากาศ) ===== */
+const addRoundBtn=document.createElement('button');
+addRoundBtn.className='add-round-btn'; addRoundBtn.type='button';
+addRoundBtn.textContent='＋ เพิ่มรอบ';
+addRoundBtn.onclick=addRound;
+roundsEl.insertBefore(addRoundBtn, atmCard);
+renumberRounds();
+
+function addRound(){
+  extraCount++;
+  const id='extra'+extraCount;
+  const r={id, name:'รอบเพิ่มเติม '+extraCount, sub:'กรอกชื่อรอบเอง', custom:true, removable:true};
+  dynamicRounds.push(r);
+  state[id]={name:r.name, custom:'', award:null, result:null};
+  roundsEl.insertBefore(buildRoundCard(r), addRoundBtn);  // แทรกก่อนปุ่ม = ก่อนบรรยากาศ
+  renumberRounds(); updateCounts();
+}
+function removeRound(id){
+  const i=dynamicRounds.findIndex(r=>r.id===id);
+  if(i>=0) dynamicRounds.splice(i,1);
+  delete state[id];
+  const card=document.getElementById('round-'+id); if(card) card.remove();
+  renumberRounds(); updateCounts();
+}
 
 /* ===================== จัดการรูป ===================== */
 /* วาดโลโก้ลายน้ำมุมขวาล่าง */
@@ -397,11 +443,11 @@ function removePhoto(ev,rid,slot){
 }
 function updateCounts(){
   let total=0;
-  ROUNDS.forEach(r=>{
+  allRounds().forEach(r=>{
     let n=0; if(state[r.id].award)n++; if(state[r.id].result)n++;
     total+=n;
     const c=document.getElementById('cnt-'+r.id);
-    c.textContent=n+'/2'; c.classList.toggle('done',n===2);
+    if(c){ c.textContent=n+'/2'; c.classList.toggle('done',n===2); }
   });
   total+=state.atmosphere.filter(o=>!o.sent).length;   // นับเฉพาะที่ยังไม่ได้ส่ง
   document.getElementById('photoCount').textContent=total;
@@ -423,8 +469,8 @@ function getMeta(){
 }
 function collectItems(){
   const items=[];
-  ROUNDS.forEach(r=>{
-    const roundName=r.custom?(state[r.id].custom.trim()||'รอบอื่นๆ'):r.name;
+  allRounds().forEach(r=>{
+    const roundName=r.custom?(state[r.id].custom.trim()||r.name):r.name;
     SLOTS.forEach(s=>{
       if(state[r.id][s.id]) items.push({round:roundName, slot:s.label, image:state[r.id][s.id]});
     });
@@ -446,9 +492,9 @@ async function submitAll(){
 
   /* โหมดทดลอง: ยังไม่มี backend */
   if(!CONFIG.ENDPOINT_URL){
-    const summary=ROUNDS.map(r=>{
+    const summary=allRounds().map(r=>{
       const n=(state[r.id].award?1:0)+(state[r.id].result?1:0);
-      return n>0?`<div><span>${r.custom?(state[r.id].custom||'รอบอื่นๆ'):r.name}</span> — ${n}/2 รูป</div>`:'';
+      return n>0?`<div><span>${r.custom?(state[r.id].custom||r.name):r.name}</span> — ${n}/2 รูป</div>`:'';
     }).filter(Boolean).join('')
     + (state.atmosphere.length?`<div><span>บรรยากาศในงาน</span> — ${state.atmosphere.length} รูป</div>`:'');
     card.innerHTML=`
