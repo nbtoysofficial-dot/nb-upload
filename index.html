@@ -71,6 +71,14 @@
   .add-round-btn:active{background:rgba(255,107,26,0.16);}
   .round-rm{flex:none;width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,0.06);
     border:1px solid var(--line);font-size:14px;cursor:pointer;margin-left:6px;}
+  .extra-slots:empty{display:none;}
+  .extra-slots{margin-top:11px;}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;}
+  .chips button{font-family:'Kanit',sans-serif;font-weight:600;font-size:12px;color:var(--orange);
+    background:rgba(255,107,26,0.09);border:1px solid rgba(255,107,26,0.4);border-radius:20px;padding:7px 14px;cursor:pointer;}
+  .chips button:active{background:rgba(255,107,26,0.2);}
+  .slot-rm{border:none;background:rgba(255,255,255,0.1);color:#cfcfd4;border-radius:50%;
+    width:18px;height:18px;font-size:10px;cursor:pointer;margin-left:4px;vertical-align:middle;}
 
   .round-body{padding:14px 16px;}
   .custom-name{margin-bottom:14px;}
@@ -217,7 +225,7 @@ const CONFIG = {
   // หลัง deploy หลังบ้านแล้ว วาง URL ตรงนี้ แล้วแถบ "โหมดทดลอง" จะหายไป
   ENDPOINT_URL: "https://script.google.com/macros/s/AKfycbwSyM46dbWX8pdoGckVcyWxx1d9WMT-sIJ3cWWwrOlD69vf9RWKD6QMpfO-FLDUuFV8/exec",
   VENUES: ["โลตัส พระราม 1","โลตัส รังสิต","Robinson Lifestyle","Big C ชลบุรี","อื่นๆ (ระบุเอง)"],
-  MAX_ATMOSPHERE: 100  // จำนวนรูปบรรยากาศสูงสุดต่อครั้ง
+  MAX_ATMOSPHERE: 500  // จำนวนรูปบรรยากาศสูงสุดต่อครั้ง
 };
 
 /* โลโก้ NB Hobby สำหรับติดลายน้ำบนรูป */
@@ -236,7 +244,7 @@ const SLOTS = [
 ];
 
 /* ===================== สถานะ (เก็บในหน่วยความจำ) ===================== */
-const state = {}; ROUNDS.forEach(r=>state[r.id]={name:r.name,custom:'',award:null,result:null});
+const state = {}; ROUNDS.forEach(r=>state[r.id]={name:r.name,custom:'',award:null,result:null,extra:[]});
 state.atmosphere = [];                 // เก็บรูปบรรยากาศหลายรูป
 const MAX_ATM = CONFIG.MAX_ATMOSPHERE; // จำนวนสูงสุด
 const UPLOAD_CONCURRENCY = 5;          // อัปพร้อมกันกี่รูป (ยิ่งมากยิ่งเร็ว แต่เปลืองเน็ต)
@@ -278,8 +286,41 @@ function buildRoundCard(r){
             <input type="file" id="file-${r.id}-${s.id}" accept="image/*" onchange="pickPhoto(this,'${r.id}','${s.id}')">
           </div>`).join('')}
       </div>
+      <div class="slots extra-slots" id="extra-${r.id}"></div>
+      <div class="chips">
+        <button type="button" onclick="addExtraSlot('${r.id}','Top 8')">＋ Top 8</button>
+        <button type="button" onclick="addExtraSlot('${r.id}','Top 16')">＋ Top 16</button>
+        <button type="button" onclick="addExtraSlot('${r.id}','Top 32')">＋ Top 32</button>
+      </div>
     </div>`;
   return card;
+}
+
+/* เพิ่มช่องรูปเพิ่ม (Top 8/16/32) ในรอบ */
+function addExtraSlot(rid, label){
+  const sid = label.replace(/\s+/g,'').toLowerCase();   // "Top 8" -> "top8"
+  const st = state[rid];
+  if(st.extra.some(x=>x.id===sid)) return;              // มีช่องนี้แล้ว ไม่ซ้ำ
+  st.extra.push({id:sid, label});
+  st[sid] = null;
+  const wrap = document.createElement('div');
+  wrap.className='slot'; wrap.id=`slotwrap-${rid}-${sid}`;
+  wrap.innerHTML = `
+    <div class="sl-lbl">🏅 ${label} <button type="button" class="slot-rm" onclick="removeExtraSlot('${rid}','${sid}')">✕</button></div>
+    <div class="tile" id="tile-${rid}-${sid}" onclick="triggerPick('${rid}','${sid}')">
+      <button class="rm" type="button" onclick="removePhoto(event,'${rid}','${sid}')">✕</button>
+      <span class="ic">＋</span><span class="tx">แตะเพื่อเลือกรูป</span>
+    </div>
+    <input type="file" id="file-${rid}-${sid}" accept="image/*" onchange="pickPhoto(this,'${rid}','${sid}')">`;
+  document.getElementById('extra-'+rid).appendChild(wrap);
+  updateCounts();
+}
+function removeExtraSlot(rid, sid){
+  const st = state[rid];
+  st.extra = st.extra.filter(x=>x.id!==sid);
+  delete st[sid];
+  const w = document.getElementById(`slotwrap-${rid}-${sid}`); if(w) w.remove();
+  updateCounts();
 }
 function renumberRounds(){
   let n=0;
@@ -321,7 +362,7 @@ function addRound(){
   const id='extra'+extraCount;
   const r={id, name:'รอบเพิ่มเติม '+extraCount, sub:'กรอกชื่อรอบเอง', custom:true, removable:true};
   dynamicRounds.push(r);
-  state[id]={name:r.name, custom:'', award:null, result:null};
+  state[id]={name:r.name, custom:'', award:null, result:null, extra:[]};
   roundsEl.insertBefore(buildRoundCard(r), addRoundBtn);  // แทรกก่อนปุ่ม = ก่อนบรรยากาศ
   renumberRounds(); updateCounts();
 }
@@ -505,10 +546,13 @@ function removePhoto(ev,rid,slot){
 function updateCounts(){
   let total=0;
   allRounds().forEach(r=>{
-    let n=0; if(state[r.id].award)n++; if(state[r.id].result)n++;
+    const st=state[r.id];
+    let n=0; if(st.award)n++; if(st.result)n++;
+    let tot=2;
+    (st.extra||[]).forEach(x=>{ tot++; if(st[x.id])n++; });
     total+=n;
     const c=document.getElementById('cnt-'+r.id);
-    if(c){ c.textContent=n+'/2'; c.classList.toggle('done',n===2); }
+    if(c){ c.textContent=n+'/'+tot; c.classList.toggle('done',n===tot); }
   });
   total+=state.atmosphere.filter(o=>!o.sent).length;   // นับเฉพาะที่ยังไม่ได้ส่ง
   document.getElementById('photoCount').textContent=total;
@@ -534,6 +578,9 @@ function collectItems(){
     const roundName=r.custom?(state[r.id].custom.trim()||r.name):r.name;
     SLOTS.forEach(s=>{
       if(state[r.id][s.id]) items.push({round:roundName, slot:s.label, image:state[r.id][s.id]});
+    });
+    (state[r.id].extra||[]).forEach(x=>{
+      if(state[r.id][x.id]) items.push({round:roundName, slot:x.label, image:state[r.id][x.id]});
     });
   });
   state.atmosphere.forEach((o,i)=>{
