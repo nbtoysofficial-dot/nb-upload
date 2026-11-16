@@ -256,7 +256,7 @@ const CONFIG = {
   // หลัง deploy หลังบ้านแล้ว วาง URL ตรงนี้ แล้วแถบ "โหมดทดลอง" จะหายไป
   ENDPOINT_URL: "https://script.google.com/macros/s/AKfycbwSyM46dbWX8pdoGckVcyWxx1d9WMT-sIJ3cWWwrOlD69vf9RWKD6QMpfO-FLDUuFV8/exec",
   VENUES: ["โลตัส พระราม 1","โลตัส รังสิต","Robinson Lifestyle","Big C ชลบุรี","อื่นๆ (ระบุเอง)"],
-  MAX_ATMOSPHERE: 500  // จำนวนรูปบรรยากาศสูงสุดต่อครั้ง
+  MAX_ATMOSPHERE: 1000 // จำนวนรูปบรรยากาศสูงสุดต่อครั้ง
 };
 
 /* โลโก้ NB Hobby สำหรับติดลายน้ำบนรูป */
@@ -525,14 +525,13 @@ function makeBlobAndThumb(src, sw, sh){
     const ctx=c.getContext('2d');
     ctx.drawImage(src,0,0,w,h);
     drawWatermark(ctx,w,h);
-    // thumbnail เล็ก ~220px จากภาพที่ติดลายน้ำแล้ว
-    const tmax=220; let tw=w, th=h;
+    // thumbnail เล็ก ~180px เป็น Blob (object URL ประหยัดแรมกว่า base64 มาก)
+    const tmax=180; let tw=w, th=h;
     if(tw>=th && tw>tmax){ th=Math.round(th*tmax/tw); tw=tmax; }
     else if(th>tw && th>tmax){ tw=Math.round(tw*tmax/th); th=tmax; }
     const tc=document.createElement('canvas'); tc.width=tw; tc.height=th;
     tc.getContext('2d').drawImage(c,0,0,tw,th);
-    const thumb=tc.toDataURL('image/jpeg',0.7);
-    c.toBlob(blob=>resolve({blob,thumb}), 'image/jpeg', 0.85);
+    tc.toBlob(thumbBlob=>{ c.toBlob(blob=>resolve({blob,thumbBlob}), 'image/jpeg', 0.85); }, 'image/jpeg', 0.6);
   });
 }
 
@@ -552,38 +551,71 @@ function renderPhoto(src, sw, sh, rid, slot){
   updateCounts();
 }
 
-/* ===== รูปบรรยากาศ: เลือกได้หลายรูปพร้อมกัน (เก็บเป็น Blob ประหยัดแรม) ===== */
+/* ===== รูปบรรยากาศ: เพิ่มทีละชิ้น ไม่วาดใหม่ทั้งกริด (รองรับหลักพันรูปไม่ค้าง) ===== */
 async function pickAtmosphere(input){
   const files=Array.from(input.files||[]);
   const cntEl=document.getElementById('cnt-atm');
-  let i=0;
-  for(const file of files){
+  for(let i=0;i<files.length;i++){
     if(state.atmosphere.length>=MAX_ATM){ alert('เพิ่มรูปบรรยากาศได้สูงสุด '+MAX_ATM+' รูป'); break; }
-    if(cntEl) cntEl.textContent='กำลังเตรียม '+(++i)+'/'+files.length;
+    if(cntEl) cntEl.textContent='กำลังเตรียม '+(i+1)+'/'+files.length;
     let res;
     try{
-      const bmp=await createImageBitmap(file,{imageOrientation:'from-image'});
+      const bmp=await createImageBitmap(files[i],{imageOrientation:'from-image'});
       res=await makeBlobAndThumb(bmp,bmp.width,bmp.height); bmp.close&&bmp.close();
     }catch(e){
-      res=await new Promise(resolve=>{const r=new FileReader();r.onload=ev=>{const im=new Image();im.onload=async()=>resolve(await makeBlobAndThumb(im,im.naturalWidth,im.naturalHeight));im.src=ev.target.result;};r.readAsDataURL(file);});
+      res=await new Promise(resolve=>{const r=new FileReader();r.onload=ev=>{const im=new Image();im.onload=async()=>resolve(await makeBlobAndThumb(im,im.naturalWidth,im.naturalHeight));im.src=ev.target.result;};r.readAsDataURL(files[i]);});
     }
-    state.atmosphere.push({blob:res.blob, thumb:res.thumb, sent:false});
-    renderAtmGrid();
-    await new Promise(r=>setTimeout(r,0)); // คืนการควบคุมให้ UI ไม่ค้าง
+    const obj={blob:res.blob, thumbBlob:res.thumbBlob, thumbUrl:URL.createObjectURL(res.thumbBlob), sent:false, el:null};
+    state.atmosphere.push(obj);
+    appendAtmNode(obj);
+    updateAtmCount();
+    if(i%5===4) await new Promise(r=>setTimeout(r,0)); // คืนการควบคุมให้ UI ทุก 5 รูป
   }
   input.value='';
-  updateCounts();
+  updateAtmCount(); updateCounts();
 }
+
+/* วาดกริดใหม่ทั้งหมด (ใช้เฉพาะตอนเริ่ม/จำเป็น) */
 function renderAtmGrid(){
   const grid=document.getElementById('atmGrid'); if(!grid)return;
-  const thumbs=state.atmosphere.map((o,i)=>`<div class="atm-thumb${o.sent?' sent':''}"><img src="${o.thumb}">${o.sent?'<div class="sent-tick">✓</div>':`<button class="rm" type="button" onclick="removeAtm(${i})">✕</button>`}</div>`).join('');
-  const addBtn=state.atmosphere.length<MAX_ATM
-    ? `<div class="atm-add" onclick="triggerPick('atm','multi')"><span class="ic">＋</span><span class="tx">เพิ่มรูป</span></div>` : '';
-  grid.innerHTML=thumbs+addBtn;
-  const c=document.getElementById('cnt-atm');
-  if(c){ c.textContent=state.atmosphere.length+'/'+MAX_ATM; c.classList.toggle('done',state.atmosphere.length>0); }
+  grid.innerHTML='<div class="atm-add" id="atmAddBtn" onclick="triggerPick(\'atm\',\'multi\')"><span class="ic">＋</span><span class="tx">เพิ่มรูป</span></div>';
+  state.atmosphere.forEach(o=>{
+    if(!o.thumbUrl && o.thumbBlob) o.thumbUrl=URL.createObjectURL(o.thumbBlob);
+    appendAtmNode(o); if(o.sent) markAtmSent(o);
+  });
+  updateAtmCount();
 }
-function removeAtm(i){ state.atmosphere.splice(i,1); renderAtmGrid(); updateCounts(); }
+
+/* เพิ่มรูปย่อ 1 ชิ้นเข้ากริด (ก่อนปุ่ม + เพิ่มรูป) */
+function appendAtmNode(obj){
+  const grid=document.getElementById('atmGrid'); if(!grid)return;
+  const add=document.getElementById('atmAddBtn');
+  const d=document.createElement('div'); d.className='atm-thumb'+(obj.sent?' sent':'');
+  const img=document.createElement('img'); img.src=obj.thumbUrl; img.loading='lazy'; d.appendChild(img);
+  if(obj.sent){ const t=document.createElement('div'); t.className='sent-tick'; t.textContent='✓'; d.appendChild(t); }
+  else { const b=document.createElement('button'); b.type='button'; b.className='rm'; b.textContent='✕'; b.addEventListener('click',()=>removeAtm(obj)); d.appendChild(b); }
+  obj.el=d;
+  if(add) grid.insertBefore(d, add); else grid.appendChild(d);
+}
+function markAtmSent(obj){
+  if(!obj.el) return;
+  obj.el.classList.add('sent');
+  const b=obj.el.querySelector('.rm'); if(b) b.remove();
+  if(!obj.el.querySelector('.sent-tick')){ const t=document.createElement('div'); t.className='sent-tick'; t.textContent='✓'; obj.el.appendChild(t); }
+}
+function updateAtmCount(){
+  const c=document.getElementById('cnt-atm');
+  const unsent=state.atmosphere.filter(o=>!o.sent).length;
+  if(c){ c.textContent=state.atmosphere.length+'/'+MAX_ATM; c.classList.toggle('done',state.atmosphere.length>0); }
+  const add=document.getElementById('atmAddBtn'); if(add) add.style.display = state.atmosphere.length<MAX_ATM?'':'none';
+}
+function removeAtm(obj){
+  const i=state.atmosphere.indexOf(obj); if(i<0) return;
+  if(obj.thumbUrl) URL.revokeObjectURL(obj.thumbUrl);
+  if(obj.el) obj.el.remove();
+  state.atmosphere.splice(i,1);
+  updateAtmCount(); updateCounts();
+}
 function removePhoto(ev,rid,slot){
   ev.preventDefault();ev.stopPropagation();
   state[rid][slot]=null;
@@ -698,7 +730,7 @@ async function submitAll(){
       const it = items[idx++];
       try{
         await uploadOne(it);
-        if(it.src){ it.src.sent=true; it.src.blob=null; }  // มาร์คว่าส่งแล้ว + คืนแรม
+        if(it.src){ it.src.sent=true; it.src.blob=null; markAtmSent(it.src); }  // มาร์คว่าส่งแล้ว + คืนแรม
         done++;
       }catch(err){ failed++; }
       drawProgress();
@@ -707,7 +739,7 @@ async function submitAll(){
   // ปล่อย worker ขนานกันตามจำนวน UPLOAD_CONCURRENCY
   await Promise.all(Array.from({length:Math.min(UPLOAD_CONCURRENCY,total)}, worker));
 
-  renderAtmGrid(); updateCounts();   // อัปเดตกริด (รูปที่ส่งแล้วจะติด ✓ ไม่ส่งซ้ำ)
+  updateAtmCount(); updateCounts();   // รูปที่ส่งแล้วถูกมาร์ค ✓ ใน worker แล้ว
 
   card.innerHTML=`
     <div class="big">${failed?'⚠️':'🎉'}</div>
