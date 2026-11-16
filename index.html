@@ -139,6 +139,11 @@
     display:flex;align-items:center;justify-content:center;}
   .logo-prev img{width:100%;height:100%;object-fit:contain;}
   .logo-prev .logo-none{color:#4a4a52;font-size:18px;}
+  .logo-upload-btn{display:block;text-align:center;font-family:inherit;font-weight:600;font-size:11px;
+    color:var(--orange);background:rgba(255,107,26,0.09);border:1.5px dashed rgba(255,107,26,0.5);
+    border-radius:9px;padding:9px 4px;cursor:pointer;}
+  .logo-upload-btn:active{background:rgba(255,107,26,0.2);}
+  .logo-col input[type=file]{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);border:0;}
 
   /* submit bar */
   .bar{position:fixed;bottom:0;left:0;right:0;background:rgba(10,10,11,0.92);backdrop-filter:blur(10px);
@@ -208,18 +213,21 @@
             <div class="logo-pos-lbl">↙ ซ้ายล่าง</div>
             <select id="cornerSel-left" onchange="onCornerChange('left')"></select>
             <div class="logo-prev" id="cornerPrev-left"></div>
+            <label class="logo-upload-btn" for="cornerFile-left">📁 อัปเอง</label>
             <input type="file" id="cornerFile-left" accept="image/*" onchange="pickCornerCustom(this,'left')">
           </div>
           <div class="logo-col">
             <div class="logo-pos-lbl">↓ กลางล่าง</div>
             <select id="cornerSel-center" onchange="onCornerChange('center')"></select>
             <div class="logo-prev" id="cornerPrev-center"></div>
+            <label class="logo-upload-btn" for="cornerFile-center">📁 อัปเอง</label>
             <input type="file" id="cornerFile-center" accept="image/*" onchange="pickCornerCustom(this,'center')">
           </div>
           <div class="logo-col">
             <div class="logo-pos-lbl">↘ ขวาล่าง</div>
             <select id="cornerSel-right" onchange="onCornerChange('right')"></select>
             <div class="logo-prev" id="cornerPrev-right"></div>
+            <label class="logo-upload-btn" for="cornerFile-right">📁 อัปเอง</label>
             <input type="file" id="cornerFile-right" accept="image/*" onchange="pickCornerCustom(this,'right')">
           </div>
         </div>
@@ -444,7 +452,6 @@ function buildCornerSelect(pos){
   const sel=document.getElementById('cornerSel-'+pos);
   let html='<option value="none">— ไม่ใส่ —</option>';
   for(const k in LOGO_LIBRARY) html+=`<option value="lib:${k}">${LOGO_LIBRARY[k].name}</option>`;
-  html+='<option value="custom">+ อัปเอง…</option>';
   sel.innerHTML=html;
   sel.value = (pos==='right') ? 'lib:nbhobby' : 'none';   // ขวาล่าง default = BeyX NB
   renderCornerPrev(pos);
@@ -452,14 +459,18 @@ function buildCornerSelect(pos){
 function onCornerChange(pos){
   const v=document.getElementById('cornerSel-'+pos).value;
   if(v==='none'){ cornerLogos[pos]=null; renderCornerPrev(pos); }
-  else if(v==='custom'){ document.getElementById('cornerFile-'+pos).click(); }
   else if(v.indexOf('lib:')===0){ const k=v.slice(4); const im=new Image(); im.onload=()=>renderCornerPrev(pos); im.src=LOGO_LIBRARY[k].data; cornerLogos[pos]=im; }
 }
 function pickCornerCustom(input, pos){
-  const f=input.files[0];
-  if(!f){ document.getElementById('cornerSel-'+pos).value=(pos==='right'?'lib:nbhobby':'none'); cornerLogos[pos]=(pos==='right'?logoImg:null); renderCornerPrev(pos); return; }
+  const f=input.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=e=>{ const im=new Image(); im.onload=()=>{ cornerLogos[pos]=im; renderCornerPrev(pos); }; im.src=e.target.result; };
+  r.onload=e=>{ const im=new Image(); im.onload=()=>{
+      cornerLogos[pos]=im; renderCornerPrev(pos);
+      const sel=document.getElementById('cornerSel-'+pos);
+      let opt=sel.querySelector('option[value="custom"]');
+      if(!opt){ opt=document.createElement('option'); opt.value='custom'; opt.textContent='📁 กำหนดเอง'; sel.appendChild(opt); }
+      sel.value='custom';
+    }; im.src=e.target.result; };
   r.readAsDataURL(f); input.value='';
 }
 function renderCornerPrev(pos){
